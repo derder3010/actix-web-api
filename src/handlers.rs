@@ -1,9 +1,67 @@
-use actix_web::{delete, post, put, web, HttpResponse, Responder};
-use mongodb::{bson::doc, Database};
+use actix_web::{get, delete, post, put, web, HttpResponse, Responder};
+use mongodb::{bson::{doc, oid::ObjectId}, Database};
 use serde_json::json;
 
 use crate::auth::{hash_password, verify_password};
 use crate::models::{LoginRequest, UpdateUser, User};
+
+#[get("/user/{id}")]
+pub async fn get_user_by_id(
+    db: web::Data<Database>,
+    user_id: web::Path<String>
+) -> impl Responder {
+    let users = db.collection::<User>("users");
+
+    // Chuyển đổi user_id thành ObjectId
+    let object_id = match ObjectId::parse_str(user_id.into_inner()) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(json!({"error": "Invalid user ID"}));
+        }
+    };
+
+    // Tìm người dùng
+    match users.find_one(doc! { "_id": object_id }, None).await {
+        Ok(Some(user)) => HttpResponse::Ok().json(user),
+        Ok(None) => HttpResponse::NotFound().json(json!({"error": "User not found"})),
+        Err(_) => {
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to retrieve user"}))
+        }
+    }
+}
+
+#[get("/user/me")]
+pub async fn get_me(
+    db: web::Data<Database>,
+    req: actix_web::HttpRequest
+) -> impl Responder {
+    let users = db.collection::<User>("users");
+
+    let auth_header = match req.headers().get("Authorization") {
+        Some(header) => header.to_str().unwrap_or(""),
+        None => {
+            return HttpResponse::Unauthorized().json(json!({"error": "Unauthorized"}));
+        }
+    };
+
+    // Giai ma token de lay username
+    let token = auth_header.trim_start_matches("Bearer ");
+    let username = match crate::auth::decode_jwt(token) {
+        Ok(claims) => claims.username,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(json!({"error": "Invalid token"}));
+        }
+    };
+
+     // Tìm người dùng bằng username
+    match users.find_one(doc! { "username": username }, None).await {
+        Ok(Some(user)) => HttpResponse::Ok().json(user),
+        Ok(None) => HttpResponse::NotFound().json(json!({"error": "User not found"})),
+        Err(_) => {
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to retrieve user"}))
+        }
+    }
+}
 
 #[post("/create_user")]
 pub async fn create_user(db: web::Data<Database>, user: web::Json<User>) -> impl Responder {

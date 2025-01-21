@@ -15,10 +15,12 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(db.clone()))
+            .service(handlers::get_user_by_id)
+            .service(handlers::get_me)
             .service(handlers::create_user)
+            .service(handlers::login_user)
             .service(handlers::update_user)
             .service(handlers::delete_user)
-            .service(handlers::login_user)
             .service(handlers::delete_all)
     })
     .bind("0.0.0.0:8080")?

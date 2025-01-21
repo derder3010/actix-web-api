@@ -12,3 +12,4 @@ serde_json = "1.0"
 bcrypt = "0.13.0"
 dotenv = "0.15.0"
 tokio = { version = "1", features = ["full"] }
+jsonwebtoken = "=9.3.0"
