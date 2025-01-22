@@ -1,2 +1,4 @@
 /target
 /certbot
+.env
+.idea/

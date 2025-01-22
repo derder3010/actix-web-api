@@ -2,7 +2,7 @@ use actix_web::{get, delete, post, put, web, HttpResponse, Responder};
 use mongodb::{bson::{doc, oid::ObjectId}, Database};
 use serde_json::json;
 
-use crate::auth::{hash_password, verify_password};
+use crate::auth::{create_jwt, hash_password, verify_password};
 use crate::models::{LoginRequest, UpdateUser, User};
 
 #[get("/user/{id}")]
@@ -30,31 +30,36 @@ pub async fn get_user_by_id(
     }
 }
 
-#[get("/user/me")]
+#[get("/me")]
 pub async fn get_me(
     db: web::Data<Database>,
     req: actix_web::HttpRequest
 ) -> impl Responder {
-    let users = db.collection::<User>("users");
+     let users = db.collection::<User>("users");
 
-    let auth_header = match req.headers().get("Authorization") {
-        Some(header) => header.to_str().unwrap_or(""),
-        None => {
-            return HttpResponse::Unauthorized().json(json!({"error": "Unauthorized"}));
-        }
+    // Lấy token từ Authorization Header
+    let auth_header = req.headers().get("Authorization");
+    if auth_header.is_none() {
+        return HttpResponse::Unauthorized().json(json!({"error": "Unauthorized: Missing token"}));
+    }
+
+    let token = auth_header.unwrap().to_str().unwrap().trim_start_matches("Bearer ");
+
+    // Giải mã token
+    let user_id = match crate::auth::decode_jwt(token) {
+        Ok(claims) => claims.sub, // Lấy user_id từ token
+        Err(_) => return HttpResponse::Unauthorized().json(json!({"error": "Invalid token"})),
     };
 
-    // Giai ma token de lay username
-    let token = auth_header.trim_start_matches("Bearer ");
-    let username = match crate::auth::decode_jwt(token) {
-        Ok(claims) => claims.username,
-        Err(_) => {
-            return HttpResponse::Unauthorized().json(json!({"error": "Invalid token"}));
-        }
+    // Convert user_id to ObjectId
+    let object_id = match ObjectId::parse_str(&user_id) {
+        Ok(oid) => oid,
+        Err(_) => return HttpResponse::BadRequest().json(json!({"error": "Invalid user ID format in token"})),
     };
 
-     // Tìm người dùng bằng username
-    match users.find_one(doc! { "username": username }, None).await {
+    println!("User's ID: {}", user_id);
+    // Tìm người dùng trong cơ sở dữ liệu
+    match users.find_one(doc! { "_id": object_id}, None).await {
         Ok(Some(user)) => HttpResponse::Ok().json(user),
         Ok(None) => HttpResponse::NotFound().json(json!({"error": "User not found"})),
         Err(_) => {
@@ -62,6 +67,7 @@ pub async fn get_me(
         }
     }
 }
+
 
 #[post("/create_user")]
 pub async fn create_user(db: web::Data<Database>, user: web::Json<User>) -> impl Responder {
@@ -72,7 +78,9 @@ pub async fn create_user(db: web::Data<Database>, user: web::Json<User>) -> impl
         Err(_) => return HttpResponse::InternalServerError().finish(),
     };
 
+     // Create a new user without manually specifying `_id`
     let new_user = User {
+        id: None,
         username: user.username.clone(),
         email: user.email.clone(),
         password: hashed_password,
@@ -99,13 +107,39 @@ pub async fn login_user(
     match user {
         Ok(Some(u)) => {
             if verify_password(&credentials.password, &u.password).unwrap_or(false) {
-                HttpResponse::Ok().json(json!({"message": "Login successful"}))
+                let user_id = u.id.unwrap();
+                match create_jwt(&user_id.to_hex(), 3600) {
+                    Ok(token) => HttpResponse::Ok().json(json!({"token": token})),
+                    Err(_) => HttpResponse::InternalServerError().json(json!({"error": "Failed to generate token"}))
+                }
+                // HttpResponse::Ok().json(json!({"message": "Login successful"}))
             } else {
                 HttpResponse::Unauthorized().json(json!({"error": "Invalid credentials"}))
             }
         }
         Ok(None) => HttpResponse::Unauthorized().json(json!({"error": "Invalid credentials"})),
         Err(_) => HttpResponse::InternalServerError().finish(),
+    }
+}
+
+#[post("/logout")]
+pub async fn logout_user(
+    req: actix_web::HttpRequest,
+    db: web::Data<Database>
+) -> impl Responder {
+    let auth_header = req.headers().get("Authorization");
+    if let Some(header_value) = auth_header {
+        let token = header_value.to_str().unwrap_or("").trim_start_matches("Bearer ");
+        // co them token vao danh sach thu hoi neu can
+        let revoked_tokens = db.collection::<mongodb::bson::Document>("revoked_tokens");
+
+        let _ = revoked_tokens
+            .insert_one(doc! { "token": token}, None)
+            .await;
+
+        HttpResponse::Ok().json(json!({"msg": "Logged out"}))
+    } else {
+        HttpResponse::Unauthorized().json(json!({"error": "No token provided"}))
     }
 }
 
